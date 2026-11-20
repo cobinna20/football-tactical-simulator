@@ -17,8 +17,10 @@ def match_team_name(target: str, candidates: List[str], threshold: int = 72) -> 
     if target in candidates:
         return target
     result = process.extractOne(target, candidates, scorer=fuzz.token_sort_ratio)
-    if result and result[1] >= threshold:
-        return result[0]
+    if result is not None:
+        matched_str, score, _ = result
+        if score >= threshold:
+            return matched_str
     return None
 
 
@@ -44,7 +46,6 @@ def extract_team_csv_metrics(team_name: str, historical_matches: List[Dict[str, 
     away_gf = sum(float(m["FTAG"]) for m in away_games) / max(1, len(away_games))
     away_ga = sum(float(m["FTHG"]) for m in away_games) / max(1, len(away_games))
 
-    # Shots & Shots on Target for xG proxy when advanced xG is unavailable
     shots_for, shots_against, sot_for = [], [], []
     for m in home_games:
         if "HS" in m and m["HS"] == m["HS"]:
@@ -62,7 +63,6 @@ def extract_team_csv_metrics(team_name: str, historical_matches: List[Dict[str, 
 
     avg_shots = sum(shots_for) / len(shots_for) if shots_for else 11.5
     avg_sot = sum(sot_for) / len(sot_for) if sot_for else 4.0
-    # Empirical xG proxy from shots & shots on target
     xg_proxy = round((avg_sot * 0.28) + ((avg_shots - avg_sot) * 0.04), 2)
 
     return {
@@ -118,10 +118,10 @@ def extract_h2h_metrics(home_team: str, away_team: str, historical_matches: List
                 aw += 1
 
     total = len(h2h_games)
-    edge = round((hw - aw) / total, 3)  # Ranges from -1.0 to +1.0
+    edge = round((hw - aw) / total, 3)
     return {"matches": total, "home_wins": hw, "draws": dr, "away_wins": aw, "h2h_edge": edge}
 def parse_form_string(form_str: str) -> float:
-    """Convert form string like 'WWDLW' into a weighted 0-100 momentum score (recent games weighted higher)."""
+    """Convert form string like 'WWDLW' into a weighted 0-100 momentum score."""
     if not form_str:
         return 55.0
     weights = [1.0, 1.15, 1.3, 1.5, 1.8]
@@ -152,19 +152,17 @@ def build_match_fusion_profile(fixture: Dict[str, Any], league_bundle: Dict[str,
     away_name = fixture["away_team"]
     avg_goals = cfg["avg_league_goals"] / 2.0
 
-    # 1. Standings Lookup
     st_keys = list(standings.keys())
     h_st_key = match_team_name(home_name, st_keys)
     a_st_key = match_team_name(away_name, st_keys)
-    h_st = standings.get(h_st_key, {"rank": 10, "played": 10, "wins": 4, "draws": 3, "losses": 3, "gf": 10 * avg_goals, "ga": 10 * avg_goals, "points": 15})
-    a_st = standings.get(a_st_key, {"rank": 10, "played": 10, "wins": 4, "draws": 3, "losses": 3, "gf": 10 * avg_goals, "ga": 10 * avg_goals, "points": 15})
+    default_st = {"rank": 10, "played": 10, "wins": 4, "draws": 3, "losses": 3, "gf": 10 * avg_goals, "ga": 10 * avg_goals, "points": 15}
+    h_st = standings.get(h_st_key, default_st) if h_st_key else default_st
+    a_st = standings.get(a_st_key, default_st) if a_st_key else default_st
 
-    # 2. CSV Historical Splits & Shot/xG Metrics
     h_csv = extract_team_csv_metrics(home_name, hist_matches)
     a_csv = extract_team_csv_metrics(away_name, hist_matches)
     h2h = extract_h2h_metrics(home_name, away_name, hist_matches)
 
-    # 3. Blend Standings + CSV Splits for Attack/Defense Goal Rates
     h_st_gf = h_st["gf"] / max(1, h_st["played"])
     h_st_ga = h_st["ga"] / max(1, h_st["played"])
     a_st_gf = a_st["gf"] / max(1, a_st["played"])
@@ -184,12 +182,10 @@ def build_match_fusion_profile(fixture: Dict[str, Any], league_bundle: Dict[str,
         a_att_rate = round(a_st_gf, 3)
         a_def_rate = round(a_st_ga, 3)
 
-    # 4. Injury & News Reports
     h_inj = compile_team_injury_report(home_name, cfg["espn_slug"], fixture.get("home_id", ""), api_injuries)
     a_inj = compile_team_injury_report(away_name, cfg["espn_slug"], fixture.get("away_id", ""), api_injuries)
 
-    # 5. Calculate Data Confidence Score (0-100%) based on how many sources verified this fixture
-    confidence = 45  # Base live fixture feed
+    confidence = 45
     if h_st_key and a_st_key:
         confidence += 20
     if h_csv.get("found") and a_csv.get("found"):
