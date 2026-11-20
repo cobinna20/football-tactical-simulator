@@ -54,8 +54,9 @@ with st.sidebar:
         selected_idx = st.selectbox("Upcoming Matches:", range(len(fixture_labels)), format_func=lambda i: fixture_labels[i])
         active_fixture = fixtures[selected_idx]
     else:
-        st.info("No scheduled fixtures found in the next 14 days for this league. Use Custom Matchup below:")
+        st.info("No scheduled fixtures found in the next 30 days. Select any two clubs below to simulate:")
         teams = sorted(list(league_bundle.get("standings", {}).keys())) or ["Home XI", "Away XI"]
+        team_ids = league_bundle.get("team_ids", {})
         c_home = st.selectbox("Home Team:", teams, index=0)
         c_away = st.selectbox("Away Team:", teams, index=min(1, len(teams) - 1))
         active_fixture = {
@@ -63,8 +64,8 @@ with st.sidebar:
             "date": "Upcoming",
             "home_team": c_home,
             "away_team": c_away,
-            "home_id": "",
-            "away_id": "",
+            "home_id": team_ids.get(c_home, ""),
+            "away_id": team_ids.get(c_away, ""),
             "home_form": "",
             "away_form": "",
             "venue": "League Stadium",
@@ -82,7 +83,7 @@ away_squad = evaluate_squad_ratings(fusion["away"], fusion["league_config"], act
 ctx = compute_tactical_and_contextual_lambdas(fusion, home_squad, away_squad, league_bundle.get("recent_results", []))
 mc = run_monte_carlo_simulation(ctx["lambda_home"], ctx["lambda_away"], ctx["upset_volatility"], n_sims=10000)
 
-top_score_item = mc["top_scorelines"][0] if mc.get("top_scorelines") else {"score": "1-1", "probability": 12.0}
+top_score_item = next(iter(mc.get("top_scorelines", [])), {"score": "1-1", "probability": 12.0})
 
 # Save pre-match probability snapshot to SQLite ledger
 save_prediction_record({
