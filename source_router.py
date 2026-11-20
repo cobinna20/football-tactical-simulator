@@ -17,6 +17,7 @@ from database import get_cached_data, set_cached_data
 from quota_manager import get_secret_key, can_call_provider, record_provider_call
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (FootballTacticalAnalytics/1.0)"}
+ESPN_BASE = "https://espn.com"
 
 
 def fetch_espn_fixtures_and_standings(espn_slug: str) -> Dict[str, Any]:
@@ -25,11 +26,10 @@ def fetch_espn_fixtures_and_standings(espn_slug: str) -> Dict[str, Any]:
     recent_results = []
     standings_map = {}
 
-    # 1. Fetch Scoreboard (Upcoming & Recent 14-day window)
     today = datetime.utcnow()
     start_str = (today - timedelta(days=7)).strftime("%Y%m%d")
     end_str = (today + timedelta(days=14)).strftime("%Y%m%d")
-    sb_url = f"https://espn.com{espn_slug}/scoreboard?dates={start_str}-{end_str}"
+    sb_url = f"{ESPN_BASE}/site/v2/sports/soccer/{espn_slug}/scoreboard?dates={start_str}-{end_str}"
 
     try:
         record_provider_call("espn_public")
@@ -37,12 +37,14 @@ def fetch_espn_fixtures_and_standings(espn_slug: str) -> Dict[str, Any]:
         if resp.status_code == 200:
             data = resp.json()
             for event in data.get("events", []):
-                comp = event.get("competitions", [{}])[0]
+                comp = next(iter(event.get("competitions", [])), {})
                 competitors = comp.get("competitors", [])
                 if len(competitors) < 2:
                     continue
-                home = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
-                away = next((c for c in competitors if c.get("homeAway") == "away"), competitors[1])
+                first_team = next(iter(competitors), {})
+                second_team = competitors[-1]
+                home = next((c for c in competitors if c.get("homeAway") == "home"), first_team)
+                away = next((c for c in competitors if c.get("homeAway") == "away"), second_team)
                 status_state = event.get("status", {}).get("type", {}).get("state", "pre")
 
                 match_obj = {
@@ -66,8 +68,7 @@ def fetch_espn_fixtures_and_standings(espn_slug: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 2. Fetch League Standings Table
-    st_url = f"https://espn.com{espn_slug}/standings"
+    st_url = f"{ESPN_BASE}/v2/sports/soccer/{espn_slug}/standings"
     try:
         resp = requests.get(st_url, headers=HEADERS, timeout=12)
         if resp.status_code == 200:
@@ -128,7 +129,6 @@ def fetch_fd_uk_historical_csv(fd_uk_code: str) -> List[Dict[str, Any]]:
     if not fd_uk_code:
         return []
 
-    # Try current 2627 and previous 2526 season codes automatically
     for season in ["2627", "2526", "2425"]:
         url = f"https://football-data.co.uk{season}/{fd_uk_code}.csv"
         try:
@@ -169,12 +169,8 @@ def fetch_api_football_injuries(api_football_id: int) -> List[Dict[str, Any]]:
 
 
 def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str, Any]:
-    """
-    Master Multi-Source Router:
-    Pulls and fuses data across ESPN, Football-Data.org, Football-Data.co.uk, and API-Football
-    with SQLite caching and automatic failover.
-    """
-    cache_key = f"league_bundle_{league_name}"
+    """Master Multi-Source Router with SQLite caching and automatic failover."""
+    cache_key = f"league_bundle_v2_{league_name}"
     if not force_refresh:
         cached = get_cached_data(cache_key)
         if cached:
@@ -199,7 +195,6 @@ def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str
     if api_injuries:
         sources_used.append("API-Football Injuries")
 
-    # Merge fixture lists (prefer ESPN rich objects, supplement with Football-Data.org)
     fixtures = espn_data["fixtures"] if espn_data["fixtures"] else fd_fixtures
 
     bundle = {
