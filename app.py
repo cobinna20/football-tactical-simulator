@@ -82,6 +82,8 @@ away_squad = evaluate_squad_ratings(fusion["away"], fusion["league_config"], act
 ctx = compute_tactical_and_contextual_lambdas(fusion, home_squad, away_squad, league_bundle.get("recent_results", []))
 mc = run_monte_carlo_simulation(ctx["lambda_home"], ctx["lambda_away"], ctx["upset_volatility"], n_sims=10000)
 
+top_score_item = mc["top_scorelines"][0] if mc.get("top_scorelines") else {"score": "1-1", "probability": 12.0}
+
 # Save pre-match probability snapshot to SQLite ledger
 save_prediction_record({
     "match_id": active_fixture["match_id"],
@@ -92,7 +94,7 @@ save_prediction_record({
     "prob_home": mc["prob_home"],
     "prob_draw": mc["prob_draw"],
     "prob_away": mc["prob_away"],
-    "projected_score": mc["top_scorelines"]["score"],
+    "projected_score": top_score_item["score"],
 })
 # ==================== TOP MATCH BANNER & CONFIDENCE METER ====================
 h_name = fusion["home"]["name"]
@@ -127,9 +129,8 @@ with tab_sim:
     m2.metric("Draw", f"{mc['prob_draw']}%")
     m3.metric(f"{a_name} Win", f"{mc['prob_away']}%")
     m4.metric("Projected xG", f"{ctx['lambda_home']} - {ctx['lambda_away']}")
-    m5.metric("Most Likely Score", mc["top_scorelines"]["score"], delta=f"{mc['top_scorelines']['probability']}% prob")
+    m5.metric("Most Likely Score", top_score_item["score"], delta=f"{top_score_item['probability']}% prob")
 
-    # Probability bar chart
     prob_df = pd.DataFrame({
         "Outcome": [f"{h_name} Win", "Draw", f"{a_name} Win"],
         "Probability (%)": [mc["prob_home"], mc["prob_draw"], mc["prob_away"]],
@@ -144,7 +145,7 @@ with tab_sim:
 
     st.divider()
     st.markdown("#### 🏟️ Interactive 90-Minute Tactical Match Simulation")
-    sim_col1, sim_col2 = st.columns([1, 2])
+    sim_col1, sim_col2 = st.columns(2)
     with sim_col1:
         animate_sim = st.checkbox("Animate live match clock", value=True)
         run_sim_btn = st.button("▶️ Simulate Match Now", type="primary", use_container_width=True)
@@ -168,10 +169,8 @@ with tab_sim:
             time.sleep(0.35)
         prog.empty()
 
-    # Final Simulated Scoreboard
     st.success(f"### 🏁 Simulated Final Score: {h_name}  {sim_data['final_home_goals']}  —  {sim_data['final_away_goals']}  {a_name}")
 
-    # Match Stats & Momentum Chart
     sc1, sc2 = st.columns([1, 1.3])
     with sc1:
         ms = sim_data["match_stats"]
@@ -197,7 +196,6 @@ with tab_sim:
             )
             st.plotly_chart(fig_mom, use_container_width=True)
 
-    # AI Tactical Reasoning Report
     with st.spinner("Generating AI Tactical Match Reasoning Report..."):
         reasoning_md = generate_tactical_reasoning(fusion, home_squad, away_squad, ctx, mc, sim_data)
     st.markdown(reasoning_md)
