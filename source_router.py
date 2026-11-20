@@ -5,13 +5,11 @@ Multi-source resilient data fetcher with cloud-whitelisted connectors:
 2. Football-Data.org Free API (Verified fixtures & teams)
 3. API-Football Free Tier (Fixtures, standings & injuries)
 4. Football-Data.co.uk Open Historical CSVs (Multi-season goals & shots data)
-5. ESPN Public Scoreboard/Teams API
 """
 
 import io
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
 from typing import Dict, List, Any
 from league_registry import get_league_config
 from database import get_cached_data, set_cached_data
@@ -19,7 +17,6 @@ from quota_manager import get_secret_key, can_call_provider, record_provider_cal
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# Mapping league names to TheSportsDB league IDs (100% cloud-friendly, no API key needed)
 TSDB_LEAGUE_IDS = {
     "England - Premier League": "4328",
     "England - Championship": "4329",
@@ -75,7 +72,6 @@ def fetch_thesportsdb_data(league_name: str) -> Dict[str, Any]:
     fixtures, recent_results, standings = [], [], {}
     status_msg = "ok"
 
-    # 1. Next 15 upcoming events in this league
     try:
         record_provider_call("thesportsdb")
         url_next = f"https://thesportsdb.com{tsdb_id}"
@@ -103,7 +99,6 @@ def fetch_thesportsdb_data(league_name: str) -> Dict[str, Any]:
     except Exception as e:
         status_msg = f"Err: {type(e).__name__}"
 
-    # 2. Last 15 completed events (for real form, goals & team list!)
     try:
         url_past = f"https://thesportsdb.com{tsdb_id}"
         r_past = requests.get(url_past, headers=HEADERS, timeout=12)
@@ -129,8 +124,8 @@ def fetch_thesportsdb_data(league_name: str) -> Dict[str, Any]:
                 })
                 for tm, gf, ga in ((h_n, hg, ag), (a_n, ag, hg)):
                     if tm not in team_stats:
-                        team_stats[tm] = {"played": 0, "wins": 0, "draws": 0, "losses": 0, "gf": 0.0, "ga": 0.0, "points": 0, "form_list": []}
-                    s = team_stats[tm]
+                        team_stats[tm] = {"name": tm, "played": 0, "wins": 0, "draws": 0, "losses": 0, "gf": 0.0, "ga": 0.0, "points": 0, "form_list": []}
+                    s = team_stats.get(tm)
                     s["played"] += 1
                     s["gf"] += gf
                     s["ga"] += ga
@@ -146,18 +141,19 @@ def fetch_thesportsdb_data(league_name: str) -> Dict[str, Any]:
                         s["losses"] += 1
                         s["form_list"].append("L")
 
-            ranked = sorted(team_stats.items(), key=lambda x: (x[1]["points"], x[1]["gf"] - x[1]["ga"]), reverse=True)
-            for idx, (tm, st_obj) in enumerate(ranked):
+            ranked = sorted(team_stats.values(), key=lambda st: (st.get("points", 0), st.get("gf", 0) - st.get("ga", 0)), reverse=True)
+            for idx, st_obj in enumerate(ranked):
+                tm = st_obj.get("name", "")
                 standings[tm] = {
                     "rank": idx + 1,
-                    "played": st_obj["played"],
-                    "wins": st_obj["wins"],
-                    "draws": st_obj["draws"],
-                    "losses": st_obj["losses"],
-                    "gf": st_obj["gf"],
-                    "ga": st_obj["ga"],
-                    "points": st_obj["points"],
-                    "form": "".join(st_obj["form_list"][-5:]),
+                    "played": st_obj.get("played", 1),
+                    "wins": st_obj.get("wins", 0),
+                    "draws": st_obj.get("draws", 0),
+                    "losses": st_obj.get("losses", 0),
+                    "gf": st_obj.get("gf", 1.0),
+                    "ga": st_obj.get("ga", 1.0),
+                    "points": st_obj.get("points", 0),
+                    "form": "".join(st_obj.get("form_list", [])[-5:]),
                 }
     except Exception:
         pass
@@ -257,7 +253,7 @@ def fetch_fd_uk_historical_csv(fd_uk_code: str) -> List[Dict[str, Any]]:
 
 def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str, Any]:
     """Master Multi-Source Router with automatic failover across all free providers."""
-    cache_key = f"league_bundle_v6_{league_name}"
+    cache_key = f"league_bundle_v8_{league_name}"
     if not force_refresh:
         cached = get_cached_data(cache_key)
         if cached:
@@ -269,7 +265,6 @@ def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str
     fixtures: List[Dict[str, Any]] = []
     recent_results: List[Dict[str, Any]] = []
 
-    # 1. TheSportsDB Public API (Cloud-friendly, covers 40+ global leagues)
     tsdb_data = fetch_thesportsdb_data(league_name)
     if tsdb_data["fixtures"] or tsdb_data["standings"]:
         sources_used.append("TheSportsDB Live Feed")
@@ -277,7 +272,6 @@ def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str
         recent_results.extend(tsdb_data["recent_results"])
         standings.update(tsdb_data["standings"])
 
-    # 2. Football-Data.org Free Tier
     fd_data = fetch_fd_org_data(cfg.get("fd_org_code"))
     if fd_data["fixtures"] or fd_data["teams"]:
         sources_used.append("Football-Data.org")
@@ -287,14 +281,12 @@ def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str
             if tm not in standings:
                 standings[tm] = {"rank": idx + 1, "played": 10, "wins": 4, "draws": 3, "losses": 3, "gf": 13.0, "ga": 13.0, "points": 15}
 
-    # 3. API-Football Free Tier
     if not fixtures:
         apif_data = fetch_api_football_data(cfg.get("api_football_id"))
         if apif_data["fixtures"]:
             sources_used.append("API-Football Live")
             fixtures.extend(apif_data["fixtures"])
 
-    # 4. Football-Data.co.uk Historical CSVs
     csv_history = fetch_fd_uk_historical_csv(cfg.get("fd_uk_code"))
     if csv_history:
         sources_used.append("Football-Data.co.uk CSV")
@@ -303,7 +295,6 @@ def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str
             for idx, tm in enumerate(csv_teams):
                 standings[tm] = {"rank": idx + 1, "played": 10, "wins": 4, "draws": 3, "losses": 3, "gf": 13.0, "ga": 13.0, "points": 15}
 
-    # Attach real form strings from standings into upcoming fixtures
     for fx in fixtures:
         if not fx.get("home_form") and fx["home_team"] in standings:
             fx["home_form"] = standings[fx["home_team"]].get("form", "")
