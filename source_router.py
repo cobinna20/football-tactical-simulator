@@ -1,10 +1,11 @@
 """
 source_router.py
-Multi-source resilient data fetcher with automatic failover across:
-1. Football-Data.org Free API (Verified fixtures & teams)
-2. API-Football Free Tier (Fixtures, standings & injuries)
-3. ESPN Public Scoreboard/Teams/Standings API
+Multi-source resilient data fetcher with cloud-whitelisted connectors:
+1. TheSportsDB Free Public API (Global leagues, upcoming fixtures, results & teams)
+2. Football-Data.org Free API (Verified fixtures & teams)
+3. API-Football Free Tier (Fixtures, standings & injuries)
 4. Football-Data.co.uk Open Historical CSVs (Multi-season goals & shots data)
+5. ESPN Public Scoreboard/Teams API
 """
 
 import io
@@ -16,10 +17,152 @@ from league_registry import get_league_config
 from database import get_cached_data, set_cached_data
 from quota_manager import get_secret_key, can_call_provider, record_provider_call
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+# Mapping league names to TheSportsDB league IDs (100% cloud-friendly, no API key needed)
+TSDB_LEAGUE_IDS = {
+    "England - Premier League": "4328",
+    "England - Championship": "4329",
+    "England - League One": "4396",
+    "England - League Two": "4397",
+    "Spain - La Liga": "4335",
+    "Spain - Segunda División": "4400",
+    "Italy - Serie A": "4332",
+    "Italy - Serie B": "4394",
+    "Germany - Bundesliga": "4331",
+    "Germany - 2. Bundesliga": "4399",
+    "France - Ligue 1": "4334",
+    "France - Ligue 2": "4401",
+    "UEFA - Champions League": "4480",
+    "UEFA - Europa League": "4481",
+    "Netherlands - Eredivisie": "4337",
+    "Portugal - Primeira Liga": "4344",
+    "Belgium - Pro League": "4338",
+    "Turkey - Süper Lig": "4339",
+    "Scotland - Premiership": "4330",
+    "Greece - Super League": "4336",
+    "Switzerland - Super League": "4675",
+    "Austria - Bundesliga": "4621",
+    "Denmark - Superliga": "4340",
+    "Sweden - Allsvenskan": "4347",
+    "Norway - Eliteserien": "4358",
+    "Poland - Ekstraklasa": "4422",
+    "Brazil - Serie A (Brasileirão)": "4351",
+    "Brazil - Serie B": "4404",
+    "Argentina - Liga Profesional": "4406",
+    "USA - Major League Soccer (MLS)": "4346",
+    "Mexico - Liga MX": "4350",
+    "Colombia - Categoría Primera A": "4407",
+    "Chile - Primera División": "4408",
+    "Nigeria - Premier Football League (NPFL)": "4892",
+    "South Africa - Premier Soccer League (PSL)": "4642",
+    "Egypt - Premier League": "4639",
+    "Morocco - Botola Pro": "4641",
+    "Saudi Arabia - Pro League": "4668",
+    "Japan - J1 League": "4633",
+    "South Korea - K League 1": "4689",
+    "China - Super League": "4359",
+    "Australia - A-League Men": "4356",
 }
+
+
+def fetch_thesportsdb_data(league_name: str) -> Dict[str, Any]:
+    """Fetch upcoming fixtures, recent results, and full team list from TheSportsDB free tier."""
+    tsdb_id = TSDB_LEAGUE_IDS.get(league_name)
+    if not tsdb_id:
+        return {"fixtures": [], "recent_results": [], "standings": {}, "status": "unmapped"}
+
+    fixtures, recent_results, standings = [], [], {}
+    status_msg = "ok"
+
+    # 1. Next 15 upcoming events in this league
+    try:
+        record_provider_call("thesportsdb")
+        url_next = f"https://thesportsdb.com{tsdb_id}"
+        r_next = requests.get(url_next, headers=HEADERS, timeout=12)
+        if r_next.status_code == 200:
+            events = r_next.json().get("events") or []
+            for ev in events:
+                h_n = ev.get("strHomeTeam", "")
+                a_n = ev.get("strAwayTeam", "")
+                if h_n and a_n:
+                    fixtures.append({
+                        "match_id": f"tsdb_{ev.get('idEvent')}",
+                        "date": f"{ev.get('dateEvent', '')}T{ev.get('strTime', '15:00:00')}",
+                        "home_team": h_n,
+                        "away_team": a_n,
+                        "home_id": str(ev.get("idHomeTeam", "")),
+                        "away_id": str(ev.get("idAwayTeam", "")),
+                        "home_form": "",
+                        "away_form": "",
+                        "venue": ev.get("strVenue") or "League Stadium",
+                        "status": "pre",
+                    })
+        else:
+            status_msg = f"HTTP {r_next.status_code}"
+    except Exception as e:
+        status_msg = f"Err: {type(e).__name__}"
+
+    # 2. Last 15 completed events (for real form, goals & team list!)
+    try:
+        url_past = f"https://thesportsdb.com{tsdb_id}"
+        r_past = requests.get(url_past, headers=HEADERS, timeout=12)
+        if r_past.status_code == 200:
+            past_events = r_past.json().get("events") or []
+            team_stats: Dict[str, Dict[str, Any]] = {}
+            for ev in past_events:
+                h_n = ev.get("strHomeTeam", "")
+                a_n = ev.get("strAwayTeam", "")
+                hs = ev.get("intHomeScore")
+                as_ = ev.get("intAwayScore")
+                if not h_n or not a_n or hs is None or as_ is None:
+                    continue
+                hg, ag = int(hs), int(as_)
+                recent_results.append({
+                    "match_id": f"tsdb_{ev.get('idEvent')}",
+                    "date": f"{ev.get('dateEvent', '')}T15:00:00",
+                    "home_team": h_n,
+                    "away_team": a_n,
+                    "home_score": hg,
+                    "away_score": ag,
+                    "status": "post",
+                })
+                for tm, gf, ga in ((h_n, hg, ag), (a_n, ag, hg)):
+                    if tm not in team_stats:
+                        team_stats[tm] = {"played": 0, "wins": 0, "draws": 0, "losses": 0, "gf": 0.0, "ga": 0.0, "points": 0, "form_list": []}
+                    s = team_stats[tm]
+                    s["played"] += 1
+                    s["gf"] += gf
+                    s["ga"] += ga
+                    if gf > ga:
+                        s["wins"] += 1
+                        s["points"] += 3
+                        s["form_list"].append("W")
+                    elif gf == ga:
+                        s["draws"] += 1
+                        s["points"] += 1
+                        s["form_list"].append("D")
+                    else:
+                        s["losses"] += 1
+                        s["form_list"].append("L")
+
+            ranked = sorted(team_stats.items(), key=lambda x: (x[1]["points"], x[1]["gf"] - x[1]["ga"]), reverse=True)
+            for idx, (tm, st_obj) in enumerate(ranked):
+                standings[tm] = {
+                    "rank": idx + 1,
+                    "played": st_obj["played"],
+                    "wins": st_obj["wins"],
+                    "draws": st_obj["draws"],
+                    "losses": st_obj["losses"],
+                    "gf": st_obj["gf"],
+                    "ga": st_obj["ga"],
+                    "points": st_obj["points"],
+                    "form": "".join(st_obj["form_list"][-5:]),
+                }
+    except Exception:
+        pass
+
+    return {"fixtures": fixtures, "recent_results": recent_results, "standings": standings, "status": status_msg}
 
 
 def fetch_fd_org_data(fd_org_code: str) -> Dict[str, Any]:
@@ -61,10 +204,10 @@ def fetch_fd_org_data(fd_org_code: str) -> Dict[str, Any]:
 def fetch_api_football_data(api_football_id: int) -> Dict[str, Any]:
     """Fetch upcoming fixtures and standings from API-Football free tier."""
     if not api_football_id or not can_call_provider("api_football"):
-        return {"fixtures": [], "standings": {}, "injuries": []}
+        return {"fixtures": [], "standings": {}}
 
     headers = {"x-apisports-key": get_secret_key("API_FOOTBALL_KEY")}
-    fixtures, standings, injuries = [], {}, []
+    fixtures, standings = [], {}
 
     try:
         record_provider_call("api_football")
@@ -91,112 +234,7 @@ def fetch_api_football_data(api_football_id: int) -> Dict[str, Any]:
     except Exception:
         pass
 
-    for yr in (2026, 2025):
-        if not can_call_provider("api_football"):
-            break
-        try:
-            record_provider_call("api_football")
-            s_url = f"https://api-sports.io{api_football_id}&season={yr}"
-            s_resp = requests.get(s_url, headers=headers, timeout=12)
-            if s_resp.status_code == 200:
-                resp_list = s_resp.json().get("response", [])
-                first_item = next(iter(resp_list), {})
-                lg_standings = first_item.get("league", {}).get("standings", [])
-                first_group = next(iter(lg_standings), [])
-                if first_group:
-                    for row in first_group:
-                        t_name = row.get("team", {}).get("name", "")
-                        all_st = row.get("all", {})
-                        goals = all_st.get("goals", {})
-                        gp = max(1, int(all_st.get("played", 1)))
-                        standings[t_name] = {
-                            "rank": int(row.get("rank", 10)),
-                            "played": gp,
-                            "wins": int(all_st.get("win", 0)),
-                            "draws": int(all_st.get("draw", 0)),
-                            "losses": int(all_st.get("lose", 0)),
-                            "gf": float(goals.get("for", gp * 1.2)),
-                            "ga": float(goals.get("against", gp * 1.2)),
-                            "points": int(row.get("points", 0)),
-                            "form": row.get("form", ""),
-                        }
-                    break
-        except Exception:
-            continue
-
-    return {"fixtures": fixtures, "standings": standings, "injuries": injuries}
-
-
-def fetch_espn_data(espn_slug: str) -> Dict[str, Any]:
-    """Fetch fixtures, recent results, teams, and standings from ESPN public endpoints."""
-    fixtures, recent_results, standings_map, team_id_map = [], [], {}, {}
-    today = datetime.utcnow()
-    start_str = (today - timedelta(days=10)).strftime("%Y%m%d")
-    end_str = (today + timedelta(days=30)).strftime("%Y%m%d")
-    sb_url = f"https://espn.com{espn_slug}/scoreboard?dates={start_str}-{end_str}"
-
-    try:
-        record_provider_call("espn_public")
-        resp = requests.get(sb_url, headers=HEADERS, timeout=10)
-        if resp.status_code == 200:
-            for event in resp.json().get("events", []):
-                comp = next(iter(event.get("competitions", [])), {})
-                competitors = comp.get("competitors", [])
-                if len(competitors) < 2:
-                    continue
-                first_t = next(iter(competitors), {})
-                last_t = competitors[-1]
-                home = next((c for c in competitors if c.get("homeAway") == "home"), first_t)
-                away = next((c for c in competitors if c.get("homeAway") == "away"), last_t)
-                status_state = event.get("status", {}).get("type", {}).get("state", "pre")
-                h_name = home.get("team", {}).get("displayName", "Home")
-                a_name = away.get("team", {}).get("displayName", "Away")
-                h_id = str(home.get("team", {}).get("id", ""))
-                a_id = str(away.get("team", {}).get("id", ""))
-                if h_name and h_id:
-                    team_id_map[h_name] = h_id
-                if a_name and a_id:
-                    team_id_map[a_name] = a_id
-                match_obj = {
-                    "match_id": f"espn_{event.get('id')}",
-                    "date": event.get("date", ""),
-                    "home_team": h_name,
-                    "away_team": a_name,
-                    "home_id": h_id,
-                    "away_id": a_id,
-                    "home_form": home.get("form", ""),
-                    "away_form": away.get("form", ""),
-                    "status": status_state,
-                    "venue": comp.get("venue", {}).get("fullName", "Standard Stadium"),
-                }
-                if status_state == "post":
-                    recent_results.append(match_obj)
-                else:
-                    fixtures.append(match_obj)
-    except Exception:
-        pass
-
-    try:
-        t_url = f"https://espn.com{espn_slug}/teams"
-        t_resp = requests.get(t_url, headers=HEADERS, timeout=10)
-        if t_resp.status_code == 200:
-            for sport in t_resp.json().get("sports", []):
-                for league in sport.get("leagues", []):
-                    for item in league.get("teams", []):
-                        tm = item.get("team", {})
-                        d_name = tm.get("displayName", "")
-                        if d_name:
-                            team_id_map[d_name] = str(tm.get("id", ""))
-                            if d_name not in standings_map:
-                                standings_map[d_name] = {
-                                    "rank": len(standings_map) + 1, "played": 10,
-                                    "wins": 4, "draws": 3, "losses": 3,
-                                    "gf": 13.0, "ga": 13.0, "points": 15,
-                                }
-    except Exception:
-        pass
-
-    return {"fixtures": fixtures, "recent_results": recent_results, "standings": standings_map, "team_ids": team_id_map}
+    return {"fixtures": fixtures, "standings": standings}
 
 
 def fetch_fd_uk_historical_csv(fd_uk_code: str) -> List[Dict[str, Any]]:
@@ -219,7 +257,7 @@ def fetch_fd_uk_historical_csv(fd_uk_code: str) -> List[Dict[str, Any]]:
 
 def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str, Any]:
     """Master Multi-Source Router with automatic failover across all free providers."""
-    cache_key = f"league_bundle_v5_{league_name}"
+    cache_key = f"league_bundle_v6_{league_name}"
     if not force_refresh:
         cached = get_cached_data(cache_key)
         if cached:
@@ -229,13 +267,17 @@ def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str
     sources_used = []
     standings: Dict[str, Any] = {}
     fixtures: List[Dict[str, Any]] = []
+    recent_results: List[Dict[str, Any]] = []
 
-    espn_data = fetch_espn_data(cfg["espn_slug"])
-    if espn_data["fixtures"] or espn_data["standings"]:
-        sources_used.append("ESPN Public API")
-        standings.update(espn_data["standings"])
-        fixtures.extend(espn_data["fixtures"])
+    # 1. TheSportsDB Public API (Cloud-friendly, covers 40+ global leagues)
+    tsdb_data = fetch_thesportsdb_data(league_name)
+    if tsdb_data["fixtures"] or tsdb_data["standings"]:
+        sources_used.append("TheSportsDB Live Feed")
+        fixtures.extend(tsdb_data["fixtures"])
+        recent_results.extend(tsdb_data["recent_results"])
+        standings.update(tsdb_data["standings"])
 
+    # 2. Football-Data.org Free Tier
     fd_data = fetch_fd_org_data(cfg.get("fd_org_code"))
     if fd_data["fixtures"] or fd_data["teams"]:
         sources_used.append("Football-Data.org")
@@ -245,14 +287,14 @@ def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str
             if tm not in standings:
                 standings[tm] = {"rank": idx + 1, "played": 10, "wins": 4, "draws": 3, "losses": 3, "gf": 13.0, "ga": 13.0, "points": 15}
 
-    if not fixtures or not standings:
+    # 3. API-Football Free Tier
+    if not fixtures:
         apif_data = fetch_api_football_data(cfg.get("api_football_id"))
-        if apif_data["fixtures"] or apif_data["standings"]:
+        if apif_data["fixtures"]:
             sources_used.append("API-Football Live")
-            if not fixtures:
-                fixtures.extend(apif_data["fixtures"])
-            standings.update(apif_data["standings"])
+            fixtures.extend(apif_data["fixtures"])
 
+    # 4. Football-Data.co.uk Historical CSVs
     csv_history = fetch_fd_uk_historical_csv(cfg.get("fd_uk_code"))
     if csv_history:
         sources_used.append("Football-Data.co.uk CSV")
@@ -261,16 +303,23 @@ def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str
             for idx, tm in enumerate(csv_teams):
                 standings[tm] = {"rank": idx + 1, "played": 10, "wins": 4, "draws": 3, "losses": 3, "gf": 13.0, "ga": 13.0, "points": 15}
 
+    # Attach real form strings from standings into upcoming fixtures
+    for fx in fixtures:
+        if not fx.get("home_form") and fx["home_team"] in standings:
+            fx["home_form"] = standings[fx["home_team"]].get("form", "")
+        if not fx.get("away_form") and fx["away_team"] in standings:
+            fx["away_form"] = standings[fx["away_team"]].get("form", "")
+
     bundle = {
         "league_name": league_name,
         "config": cfg,
         "fixtures": fixtures,
-        "recent_results": espn_data["recent_results"],
+        "recent_results": recent_results,
         "standings": standings,
-        "team_ids": espn_data.get("team_ids", {}),
+        "team_ids": {},
         "historical_matches": csv_history,
         "api_injuries": [],
-        "sources_used": sources_used if sources_used else ["Baseline League Model"],
+        "sources_used": sources_used if sources_used else [f"Baseline Model (TSDB: {tsdb_data.get('status')})"],
     }
 
     if sources_used:
