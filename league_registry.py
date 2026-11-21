@@ -1,85 +1,73 @@
-"""
-league_registry.py
-Master directory of 54 global football leagues mapped across multiple free-tier
-data providers for zero-cost, multi-source resilient data ingestion.
-"""
-
-from typing import Dict, List, Any
-
-LEAGUE_REGISTRY: Dict[str, Dict[str, Any]] = {
-    "England - Premier League": {"country": "England", "tier": 1, "espn_slug": "eng.1", "fd_org_code": "PL", "api_football_id": 39, "fd_uk_code": "E0", "has_xg": True, "home_adv_boost": 1.12, "avg_league_goals": 2.85},
-    "Spain - La Liga": {"country": "Spain", "tier": 1, "espn_slug": "esp.1", "fd_org_code": "PD", "api_football_id": 140, "fd_uk_code": "SP1", "has_xg": True, "home_adv_boost": 1.14, "avg_league_goals": 2.62},
-    "Italy - Serie A": {"country": "Italy", "tier": 1, "espn_slug": "ita.1", "fd_org_code": "SA", "api_football_id": 135, "fd_uk_code": "I1", "has_xg": True, "home_adv_boost": 1.11, "avg_league_goals": 2.68},
-    "Germany - Bundesliga": {"country": "Germany", "tier": 1, "espn_slug": "ger.1", "fd_org_code": "BL1", "api_football_id": 78, "fd_uk_code": "D1", "has_xg": True, "home_adv_boost": 1.13, "avg_league_goals": 3.12},
-    "France - Ligue 1": {"country": "France", "tier": 1, "espn_slug": "fra.1", "fd_org_code": "FL1", "api_football_id": 61, "fd_uk_code": "F1", "has_xg": True, "home_adv_boost": 1.12, "avg_league_goals": 2.70},
-    "UEFA - Champions League": {"country": "Europe", "tier": 1, "espn_slug": "uefa.champions", "fd_org_code": "CL", "api_football_id": 2, "fd_uk_code": None, "has_xg": True, "home_adv_boost": 1.15, "avg_league_goals": 2.95},
-    "UEFA - Europa League": {"country": "Europe", "tier": 1, "espn_slug": "uefa.europa", "fd_org_code": "EL", "api_football_id": 3, "fd_uk_code": None, "has_xg": True, "home_adv_boost": 1.14, "avg_league_goals": 2.82},
-    "UEFA - Europa Conference League": {"country": "Europe", "tier": 2, "espn_slug": "uefa.europa.conf", "fd_org_code": None, "api_football_id": 848, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.15, "avg_league_goals": 2.78},
-    "England - Championship": {"country": "England", "tier": 2, "espn_slug": "eng.2", "fd_org_code": "ELC", "api_football_id": 40, "fd_uk_code": "E1", "has_xg": True, "home_adv_boost": 1.13, "avg_league_goals": 2.65},
-    "England - League One": {"country": "England", "tier": 2, "espn_slug": "eng.3", "fd_org_code": None, "api_football_id": 41, "fd_uk_code": "E2", "has_xg": False, "home_adv_boost": 1.12, "avg_league_goals": 2.60},
-    "England - League Two": {"country": "England", "tier": 2, "espn_slug": "eng.4", "fd_org_code": None, "api_football_id": 42, "fd_uk_code": "E3", "has_xg": False, "home_adv_boost": 1.12, "avg_league_goals": 2.58},
-    "Spain - Segunda División": {"country": "Spain", "tier": 2, "espn_slug": "esp.2", "fd_org_code": None, "api_football_id": 141, "fd_uk_code": "SP2", "has_xg": False, "home_adv_boost": 1.15, "avg_league_goals": 2.28},
-    "Italy - Serie B": {"country": "Italy", "tier": 2, "espn_slug": "ita.2", "fd_org_code": None, "api_football_id": 136, "fd_uk_code": "I2", "has_xg": False, "home_adv_boost": 1.13, "avg_league_goals": 2.45},
-    "Germany - 2. Bundesliga": {"country": "Germany", "tier": 2, "espn_slug": "ger.2", "fd_org_code": None, "api_football_id": 79, "fd_uk_code": "D2", "has_xg": False, "home_adv_boost": 1.13, "avg_league_goals": 2.95},
-    "France - Ligue 2": {"country": "France", "tier": 2, "espn_slug": "fra.2", "fd_org_code": None, "api_football_id": 62, "fd_uk_code": "F2", "has_xg": False, "home_adv_boost": 1.14, "avg_league_goals": 2.40},
-    "Netherlands - Eredivisie": {"country": "Netherlands", "tier": 1, "espn_slug": "ned.1", "fd_org_code": "DED", "api_football_id": 88, "fd_uk_code": "N1", "has_xg": True, "home_adv_boost": 1.14, "avg_league_goals": 3.10},
-    "Portugal - Primeira Liga": {"country": "Portugal", "tier": 1, "espn_slug": "por.1", "fd_org_code": "PPL", "api_football_id": 94, "fd_uk_code": "P1", "has_xg": True, "home_adv_boost": 1.13, "avg_league_goals": 2.65},
-    "Belgium - Pro League": {"country": "Belgium", "tier": 2, "espn_slug": "bel.1", "fd_org_code": None, "api_football_id": 144, "fd_uk_code": "B1", "has_xg": False, "home_adv_boost": 1.13, "avg_league_goals": 2.80},
-    "Turkey - Süper Lig": {"country": "Turkey", "tier": 2, "espn_slug": "tur.1", "fd_org_code": None, "api_football_id": 203, "fd_uk_code": "T1", "has_xg": False, "home_adv_boost": 1.16, "avg_league_goals": 2.75},
-    "Scotland - Premiership": {"country": "Scotland", "tier": 2, "espn_slug": "sco.1", "fd_org_code": None, "api_football_id": 179, "fd_uk_code": "SC0", "has_xg": False, "home_adv_boost": 1.13, "avg_league_goals": 2.72},
-    "Greece - Super League": {"country": "Greece", "tier": 2, "espn_slug": "gre.1", "fd_org_code": None, "api_football_id": 197, "fd_uk_code": "G1", "has_xg": False, "home_adv_boost": 1.15, "avg_league_goals": 2.45},
-    "Switzerland - Super League": {"country": "Switzerland", "tier": 2, "espn_slug": "sui.1", "fd_org_code": None, "api_football_id": 207, "fd_uk_code": "SWZ", "has_xg": False, "home_adv_boost": 1.13, "avg_league_goals": 2.90},
-    "Austria - Bundesliga": {"country": "Austria", "tier": 2, "espn_slug": "aut.1", "fd_org_code": None, "api_football_id": 218, "fd_uk_code": "AUT", "has_xg": False, "home_adv_boost": 1.12, "avg_league_goals": 2.88},
-    "Denmark - Superliga": {"country": "Denmark", "tier": 2, "espn_slug": "den.1", "fd_org_code": None, "api_football_id": 119, "fd_uk_code": "DNK", "has_xg": False, "home_adv_boost": 1.12, "avg_league_goals": 2.76},
-    "Sweden - Allsvenskan": {"country": "Sweden", "tier": 2, "espn_slug": "swe.1", "fd_org_code": None, "api_football_id": 113, "fd_uk_code": "SWE", "has_xg": False, "home_adv_boost": 1.14, "avg_league_goals": 2.74},
-    "Norway - Eliteserien": {"country": "Norway", "tier": 2, "espn_slug": "nor.1", "fd_org_code": None, "api_football_id": 103, "fd_uk_code": "NOR", "has_xg": False, "home_adv_boost": 1.15, "avg_league_goals": 2.92},
-    "Poland - Ekstraklasa": {"country": "Poland", "tier": 2, "espn_slug": "pol.1", "fd_org_code": None, "api_football_id": 106, "fd_uk_code": "POL", "has_xg": False, "home_adv_boost": 1.14, "avg_league_goals": 2.55},
-    "Croatia - HNL": {"country": "Croatia", "tier": 3, "espn_slug": "cro.1", "fd_org_code": None, "api_football_id": 210, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.14, "avg_league_goals": 2.50},
-    "Serbia - SuperLiga": {"country": "Serbia", "tier": 3, "espn_slug": "srb.1", "fd_org_code": None, "api_football_id": 286, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.15, "avg_league_goals": 2.58},
-    "Czech Republic - First League": {"country": "Czech Republic", "tier": 3, "espn_slug": "cze.1", "fd_org_code": None, "api_football_id": 345, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.14, "avg_league_goals": 2.68},
-    "Romania - Liga I": {"country": "Romania", "tier": 2, "espn_slug": "rou.1", "fd_org_code": None, "api_football_id": 283, "fd_uk_code": "ROU", "has_xg": False, "home_adv_boost": 1.14, "avg_league_goals": 2.42},
-    "Ukraine - Premier League": {"country": "Ukraine", "tier": 3, "espn_slug": "ukr.1", "fd_org_code": None, "api_football_id": 333, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.10, "avg_league_goals": 2.52},
-    "Brazil - Serie A (Brasileirão)": {"country": "Brazil", "tier": 1, "espn_slug": "bra.1", "fd_org_code": "BSA", "api_football_id": 71, "fd_uk_code": "BRA", "has_xg": True, "home_adv_boost": 1.18, "avg_league_goals": 2.48},
-    "Brazil - Serie B": {"country": "Brazil", "tier": 3, "espn_slug": "bra.2", "fd_org_code": None, "api_football_id": 72, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.17, "avg_league_goals": 2.25},
-    "Argentina - Liga Profesional": {"country": "Argentina", "tier": 2, "espn_slug": "arg.1", "fd_org_code": None, "api_football_id": 128, "fd_uk_code": "ARG", "has_xg": False, "home_adv_boost": 1.17, "avg_league_goals": 2.22},
-    "USA - Major League Soccer (MLS)": {"country": "USA", "tier": 1, "espn_slug": "usa.1", "fd_org_code": None, "api_football_id": 253, "fd_uk_code": "USA", "has_xg": True, "home_adv_boost": 1.16, "avg_league_goals": 2.92},
-    "Mexico - Liga MX": {"country": "Mexico", "tier": 2, "espn_slug": "mex.1", "fd_org_code": None, "api_football_id": 262, "fd_uk_code": "MEX", "has_xg": False, "home_adv_boost": 1.16, "avg_league_goals": 2.75},
-    "Colombia - Categoría Primera A": {"country": "Colombia", "tier": 3, "espn_slug": "col.1", "fd_org_code": None, "api_football_id": 239, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.18, "avg_league_goals": 2.30},
-    "Chile - Primera División": {"country": "Chile", "tier": 3, "espn_slug": "chi.1", "fd_org_code": None, "api_football_id": 265, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.15, "avg_league_goals": 2.60},
-    "CONMEBOL - Copa Libertadores": {"country": "South America", "tier": 2, "espn_slug": "conmebol.libertadores", "fd_org_code": None, "api_football_id": 13, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.20, "avg_league_goals": 2.55},
-    "Nigeria - Premier Football League (NPFL)": {"country": "Nigeria", "tier": 3, "espn_slug": "nga.1", "fd_org_code": None, "api_football_id": 399, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.24, "avg_league_goals": 2.15},
-    "South Africa - Premier Soccer League (PSL)": {"country": "South Africa", "tier": 3, "espn_slug": "rsa.1", "fd_org_code": None, "api_football_id": 288, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.16, "avg_league_goals": 2.20},
-    "Egypt - Premier League": {"country": "Egypt", "tier": 3, "espn_slug": "egy.1", "fd_org_code": None, "api_football_id": 233, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.16, "avg_league_goals": 2.32},
-    "Morocco - Botola Pro": {"country": "Morocco", "tier": 3, "espn_slug": "mar.1", "fd_org_code": None, "api_football_id": 200, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.17, "avg_league_goals": 2.18},
-    "Ghana - Premier League": {"country": "Ghana", "tier": 3, "espn_slug": "gha.1", "fd_org_code": None, "api_football_id": 570, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.22, "avg_league_goals": 2.12},
-    "CAF - Champions League": {"country": "Africa", "tier": 3, "espn_slug": "caf.champions", "fd_org_code": None, "api_football_id": 12, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.22, "avg_league_goals": 2.28},
-    "Saudi Arabia - Pro League": {"country": "Saudi Arabia", "tier": 3, "espn_slug": "ksa.1", "fd_org_code": None, "api_football_id": 307, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.15, "avg_league_goals": 2.95},
-    "Japan - J1 League": {"country": "Japan", "tier": 2, "espn_slug": "jpn.1", "fd_org_code": None, "api_football_id": 98, "fd_uk_code": "JPN", "has_xg": False, "home_adv_boost": 1.12, "avg_league_goals": 2.65},
-    "South Korea - K League 1": {"country": "South Korea", "tier": 3, "espn_slug": "kor.1", "fd_org_code": None, "api_football_id": 292, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.13, "avg_league_goals": 2.58},
-    "China - Super League": {"country": "China", "tier": 2, "espn_slug": "chn.1", "fd_org_code": None, "api_football_id": 169, "fd_uk_code": "CHN", "has_xg": False, "home_adv_boost": 1.15, "avg_league_goals": 2.80},
-    "Australia - A-League Men": {"country": "Australia", "tier": 3, "espn_slug": "aus.1", "fd_org_code": None, "api_football_id": 188, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.14, "avg_league_goals": 3.05},
-    "India - Indian Super League": {"country": "India", "tier": 3, "espn_slug": "ind.1", "fd_org_code": None, "api_football_id": 323, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.15, "avg_league_goals": 2.75},
-    "UAE - Pro League": {"country": "UAE", "tier": 3, "espn_slug": "uae.1", "fd_org_code": None, "api_football_id": 301, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.14, "avg_league_goals": 2.90},
-    "FIFA - World Cup / International Friendlies": {"country": "World", "tier": 2, "espn_slug": "fifa.friendly", "fd_org_code": "WC", "api_football_id": 10, "fd_uk_code": None, "has_xg": False, "home_adv_boost": 1.08, "avg_league_goals": 2.55},
-}
-
-RSS_INJURY_FEEDS: List[str] = [
-    "https://bbci.co.uk",
-    "https://espn.com",
-    "https://skysports.com",
-    "https://goal.com",
+# league_registry.py - 54 leagues, 【entity-ESPN¦canonical_name=ESPN】 first because it needs no key
+# Tuple: key, name, country, espn_slug, football_data_code, api_football_id, thesportsdb_id, fdcuk_code
+LEAGUES = [
+    ("eng_premier", "Premier League", "England", "eng.1", "PL", 39, 4328, "E0"),
+    ("esp_laliga", "La Liga", "Spain", "esp.1", "PD", 140, 4335, "SP1"),
+    ("ita_seriea", "Serie A", "Italy", "ita.1", "SA", 135, 4332, "I1"),
+    ("ger_bundesliga", "Bundesliga", "Germany", "ger.1", "BL1", 78, 4331, "D1"),
+    ("fra_ligue1", "Ligue 1", "France", "fra.1", "FL1", 61, 4334, "F1"),
+    ("ned_eredivisie", "Eredivisie", "Netherlands", "ned.1", "DED", 88, 4337, "N1"),
+    ("por_primeira", "Primeira Liga", "Portugal", "por.1", "PPL", 94, 4344, "P1"),
+    ("eng_championship", "Championship", "England", "eng.2", "EL1", 40, 4329, "E1"),
+    ("eng_league1", "League One", "England", "eng.3", None, 41, 4347, "E2"),
+    ("eng_league2", "League Two", "England", "eng.4", None, 42, 4348, "E3"),
+    ("sco_premiership", "Scottish Premiership", "Scotland", "sco.1", None, 179, 4330, "SC0"),
+    ("bel_proleague", "Belgian Pro League", "Belgium", "bel.1", None, 144, 4338, "B1"),
+    ("tur_superlig", "Super Lig", "Turkey", "tur.1", None, 203, 4346, "T1"),
+    ("sui_superleague", "Swiss Super League", "Switzerland", "sui.1", None, 207, 4345, None),
+    ("aut_bundesliga", "Austrian Bundesliga", "Austria", "aut.1", None, 218, 4339, None),
+    ("gre_superleague", "Greek Super League", "Greece", "gre.1", None, 197, 4341, "G1"),
+    ("rus_premier", "Russian Premier League", "Russia", "rus.1", None, 235, 4342, None),
+    ("ukr_premier", "Ukrainian Premier League", "Ukraine", "ukr.1", None, 236, 4351, None),
+    ("pol_ekstraklasa", "Ekstraklasa", "Poland", "pol.1", None, 187, 4352, None),
+    ("cze_first", "Czech First League", "Czech Republic", "cze.1", None, 172, 4353, None),
+    ("cro_hnl", "Croatian HNL", "Croatia", "cro.1", None, 170, 4354, None),
+    ("srb_superliga", "Serbian SuperLiga", "Serbia", "srb.1", None, 286, 4355, None),
+    ("rom_liga1", "Romanian Liga I", "Romania", "rou.1", None, 283, 4356, None),
+    ("hun_nb1", "Hungarian NB I", "Hungary", "hun.1", None, 189, 4357, None),
+    ("swe_allsvenskan", "Allsvenskan", "Sweden", "swe.1", None, 113, 4358, None),
+    ("nor_eliteserien", "Eliteserien", "Norway", "nor.1", None, 103, 4359, None),
+    ("den_superliga", "Danish Superliga", "Denmark", "den.1", None, 119, 4360, None),
+    ("fin_veikkausliiga", "Veikkausliiga", "Finland", "fin.1", None, 124, 4361, None),
+    ("isl_urvalsdeild", "Iceland Urvalsdeild", "Iceland", "isl.1", None, 164, 4362, None),
+    ("irl_premier", "Irish Premier Division", "Ireland", "irl.1", None, 165, 4363, None),
+    ("wal_cymru", "Cymru Premier", "Wales", "wal.1", None, 242, 4364, None),
+    ("usa_mls", "MLS", "USA", "usa.1", None, 253, 4370, None),
+    ("mex_ligamx", "Liga MX", "Mexico", "mex.1", None, 262, 4371, None),
+    ("bra_seriea", "Brasileirao Serie A", "Brazil", "bra.1", None, 71, 4372, None),
+    ("arg_primera", "Argentine Primera", "Argentina", "arg.1", None, 128, 4373, None),
+    ("chi_primera", "Chilean Primera", "Chile", "chi.1", None, 265, 4374, None),
+    ("col_primera", "Colombian Primera A", "Colombia", "col.1", None, 270, 4375, None),
+    ("peru_primera", "Peruvian Primera", "Peru", "per.1", None, 278, 4376, None),
+    ("uru_primera", "Uruguayan Primera", "Uruguay", "uru.1", None, 282, 4377, None),
+    ("par_primera", "Paraguayan Primera", "Paraguay", "par.1", None, 279, 4378, None),
+    ("ecu_ligapro", "Ecuador LigaPro", "Ecuador", "ecu.1", None, 273, 4379, None),
+    ("ven_primera", "Venezuelan Primera", "Venezuela", "ven.1", None, 281, 4380, None),
+    ("bol_primera", "Bolivian Primera", "Bolivia", "bol.1", None, 268, 4381, None),
+    ("jpn_j1", "J1 League", "Japan", "jpn.1", None, 98, 4382, None),
+    ("kor_k1", "K League 1", "South Korea", "kor.1", None, 292, 4383, None),
+    ("aus_aleague", "A-League", "Australia", "aus.1", None, 188, 4384, None),
+    ("ind_isl", "Indian Super League", "India", "ind.1", None, 323, 4385, None),
+    ("sau_proleague", "Saudi Pro League", "Saudi Arabia", "sau.1", None, 307, 4386, None),
+    ("uae_proleague", "UAE Pro League", "UAE", "uae.1", None, 312, 4387, None),
+    ("qat_stars", "Qatar Stars League", "Qatar", "qat.1", None, 311, 4388, None),
+    ("egy_premier", "Egyptian Premier League", "Egypt", "egy.1", None, 233, 4389, None),
+    ("nga_npfl", "Nigeria NPFL", "Nigeria", "nga.1", None, 400, 4390, None),
+    ("zaf_premier", "South African Premiership", "South Africa", "zaf.1", None, 268, 4391, None),
+    ("mar_botola", "Moroccan Botola Pro", "Morocco", "mar.1", None, 202, 4392, None),
 ]
 
+LEAGUE_REGISTRY = {}
+for key, name, country, espn, fd, apif, tsdb, fdcuk in LEAGUES:
+    LEAGUE_REGISTRY[key] = {
+        "name": name, "country": country, "espn_slug": espn,
+        "football_data_code": fd, "api_football_id": apif,
+        "thesportsdb_id": tsdb, "fdcuk_code": fdcuk,
+    }
 
-def get_all_league_names() -> List[str]:
-    return list(LEAGUE_REGISTRY.keys())
-
-
-def get_league_config(league_name: str) -> Dict[str, Any]:
-    if league_name not in LEAGUE_REGISTRY:
-        raise ValueError(f"League '{league_name}' not found in LEAGUE_REGISTRY.")
-    return LEAGUE_REGISTRY[league_name]
-
-
-def get_leagues_by_tier(tier: int) -> List[str]:
-    return [name for name, cfg in LEAGUE_REGISTRY.items() if cfg["tier"] == tier]
+RSS_INJURY_FEEDS = [
+    "https://www.bbc.com/sport/football/rss.xml",
+    "https://www.skysports.com/rss/12040",
+    "https://www.espn.com/espn/latestnews",
+    "https://feeds.bbci.co.uk/sport/football/rss.xml",
+]
