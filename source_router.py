@@ -1,318 +1,199 @@
-"""
-source_router.py
-Multi-source resilient data fetcher with cloud-whitelisted connectors:
-1. TheSportsDB Free Public API (Global leagues, upcoming fixtures, results & teams)
-2. Football-Data.org Free API (Verified fixtures & teams)
-3. API-Football Free Tier (Fixtures, standings & injuries)
-4. Football-Data.co.uk Open Historical CSVs (Multi-season goals & shots data)
-"""
+# source_router.py - ESPN first, visible diagnostics, season handling for 2026
+import os, time, csv, io
+from datetime import datetime, timedelta
+try:
+    import streamlit as st
+except Exception:
+    st = None
+try:
+    import requests
+except Exception:
+    requests = None
+try:
+    from league_registry import LEAGUE_REGISTRY
+except Exception:
+    LEAGUE_REGISTRY = {}
+try:
+    from quota_manager import get_api_keys, can_call_provider, record_provider_call
+except Exception:
+    def get_api_keys(): return {}
+    def can_call_provider(p): return True, 99, ""
+    def record_provider_call(p): pass
+try:
+    from database import get_cached_data, set_cached_data
+except Exception:
+    def get_cached_data(k): return None
+    def set_cached_data(k, v, ttl_seconds=3600): pass
 
-import io
-import requests
-import pandas as pd
-from typing import Dict, List, Any
-from league_registry import get_league_config
-from database import get_cached_data, set_cached_data
-from quota_manager import get_secret_key, can_call_provider, record_provider_call
+HEADERS = {"User-Agent": "football-tactical-simulator/1.0"}
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+def _clean(v):
+    return str(v).strip().strip('"').strip("'") if v is not None else ""
 
-TSDB_LEAGUE_IDS = {
-    "England - Premier League": "4328",
-    "England - Championship": "4329",
-    "England - League One": "4396",
-    "England - League Two": "4397",
-    "Spain - La Liga": "4335",
-    "Spain - Segunda División": "4400",
-    "Italy - Serie A": "4332",
-    "Italy - Serie B": "4394",
-    "Germany - Bundesliga": "4331",
-    "Germany - 2. Bundesliga": "4399",
-    "France - Ligue 1": "4334",
-    "France - Ligue 2": "4401",
-    "UEFA - Champions League": "4480",
-    "UEFA - Europa League": "4481",
-    "Netherlands - Eredivisie": "4337",
-    "Portugal - Primeira Liga": "4344",
-    "Belgium - Pro League": "4338",
-    "Turkey - Süper Lig": "4339",
-    "Scotland - Premiership": "4330",
-    "Greece - Super League": "4336",
-    "Switzerland - Super League": "4675",
-    "Austria - Bundesliga": "4621",
-    "Denmark - Superliga": "4340",
-    "Sweden - Allsvenskan": "4347",
-    "Norway - Eliteserien": "4358",
-    "Poland - Ekstraklasa": "4422",
-    "Brazil - Serie A (Brasileirão)": "4351",
-    "Brazil - Serie B": "4404",
-    "Argentina - Liga Profesional": "4406",
-    "USA - Major League Soccer (MLS)": "4346",
-    "Mexico - Liga MX": "4350",
-    "Colombia - Categoría Primera A": "4407",
-    "Chile - Primera División": "4408",
-    "Nigeria - Premier Football League (NPFL)": "4892",
-    "South Africa - Premier Soccer League (PSL)": "4642",
-    "Egypt - Premier League": "4639",
-    "Morocco - Botola Pro": "4641",
-    "Saudi Arabia - Pro League": "4668",
-    "Japan - J1 League": "4633",
-    "South Korea - K League 1": "4689",
-    "China - Super League": "4359",
-    "Australia - A-League Men": "4356",
-}
+def _log(diags, provider, url, status, error, found, note=""):
+    diags.append({"provider": provider, "url": url, "status": status, "error": error or "", "found": found, "note": note, "time": datetime.now().strftime("%H:%M:%S")})
 
-
-def fetch_thesportsdb_data(league_name: str) -> Dict[str, Any]:
-    """Fetch upcoming fixtures, recent results, and full team list from TheSportsDB free tier."""
-    tsdb_id = TSDB_LEAGUE_IDS.get(league_name)
-    if not tsdb_id:
-        return {"fixtures": [], "recent_results": [], "standings": {}, "status": "unmapped"}
-
-    fixtures, recent_results, standings = [], [], {}
-    status_msg = "ok"
-
+def _http_get(url, headers=None, params=None, timeout=12):
+    if requests is None:
+        return {"status": 0, "error": "requests not installed", "json": None, "text": ""}
     try:
-        record_provider_call("thesportsdb")
-        url_next = f"https://thesportsdb.com{tsdb_id}"
-        r_next = requests.get(url_next, headers=HEADERS, timeout=12)
-        if r_next.status_code == 200:
-            events = r_next.json().get("events") or []
-            for ev in events:
-                h_n = ev.get("strHomeTeam", "")
-                a_n = ev.get("strAwayTeam", "")
-                if h_n and a_n:
-                    fixtures.append({
-                        "match_id": f"tsdb_{ev.get('idEvent')}",
-                        "date": f"{ev.get('dateEvent', '')}T{ev.get('strTime', '15:00:00')}",
-                        "home_team": h_n,
-                        "away_team": a_n,
-                        "home_id": str(ev.get("idHomeTeam", "")),
-                        "away_id": str(ev.get("idAwayTeam", "")),
-                        "home_form": "",
-                        "away_form": "",
-                        "venue": ev.get("strVenue") or "League Stadium",
-                        "status": "pre",
-                    })
-        else:
-            status_msg = f"HTTP {r_next.status_code}"
-    except Exception as e:
-        status_msg = f"Err: {type(e).__name__}"
-
-    try:
-        url_past = f"https://thesportsdb.com{tsdb_id}"
-        r_past = requests.get(url_past, headers=HEADERS, timeout=12)
-        if r_past.status_code == 200:
-            past_events = r_past.json().get("events") or []
-            team_stats: Dict[str, Dict[str, Any]] = {}
-            for ev in past_events:
-                h_n = ev.get("strHomeTeam", "")
-                a_n = ev.get("strAwayTeam", "")
-                hs = ev.get("intHomeScore")
-                as_ = ev.get("intAwayScore")
-                if not h_n or not a_n or hs is None or as_ is None:
-                    continue
-                hg, ag = int(hs), int(as_)
-                recent_results.append({
-                    "match_id": f"tsdb_{ev.get('idEvent')}",
-                    "date": f"{ev.get('dateEvent', '')}T15:00:00",
-                    "home_team": h_n,
-                    "away_team": a_n,
-                    "home_score": hg,
-                    "away_score": ag,
-                    "status": "post",
-                })
-                for tm, gf, ga in ((h_n, hg, ag), (a_n, ag, hg)):
-                    if tm not in team_stats:
-                        team_stats[tm] = {"name": tm, "played": 0, "wins": 0, "draws": 0, "losses": 0, "gf": 0.0, "ga": 0.0, "points": 0, "form_list": []}
-                    s = team_stats.get(tm)
-                    s["played"] += 1
-                    s["gf"] += gf
-                    s["ga"] += ga
-                    if gf > ga:
-                        s["wins"] += 1
-                        s["points"] += 3
-                        s["form_list"].append("W")
-                    elif gf == ga:
-                        s["draws"] += 1
-                        s["points"] += 1
-                        s["form_list"].append("D")
-                    else:
-                        s["losses"] += 1
-                        s["form_list"].append("L")
-
-            ranked = sorted(team_stats.values(), key=lambda st: (st.get("points", 0), st.get("gf", 0) - st.get("ga", 0)), reverse=True)
-            for idx, st_obj in enumerate(ranked):
-                tm = st_obj.get("name", "")
-                standings[tm] = {
-                    "rank": idx + 1,
-                    "played": st_obj.get("played", 1),
-                    "wins": st_obj.get("wins", 0),
-                    "draws": st_obj.get("draws", 0),
-                    "losses": st_obj.get("losses", 0),
-                    "gf": st_obj.get("gf", 1.0),
-                    "ga": st_obj.get("ga", 1.0),
-                    "points": st_obj.get("points", 0),
-                    "form": "".join(st_obj.get("form_list", [])[-5:]),
-                }
-    except Exception:
-        pass
-
-    return {"fixtures": fixtures, "recent_results": recent_results, "standings": standings, "status": status_msg}
-
-
-def fetch_fd_org_data(fd_org_code: str) -> Dict[str, Any]:
-    """Fetch verified upcoming matches and teams from Football-Data.org free tier."""
-    if not fd_org_code or not can_call_provider("football_data_org"):
-        return {"fixtures": [], "teams": []}
-
-    headers = {"X-Auth-Token": get_secret_key("FOOTBALL_DATA_KEY")}
-    fixtures, teams = [], []
-    try:
-        record_provider_call("football_data_org")
-        url = f"https://football-data.org{fd_org_code}/matches?status=SCHEDULED"
-        resp = requests.get(url, headers=headers, timeout=12)
-        if resp.status_code == 200:
-            for m in resp.json().get("matches", [])[:25]:
-                h_n = m.get("homeTeam", {}).get("name", "")
-                a_n = m.get("awayTeam", {}).get("name", "")
-                if h_n:
-                    teams.append(h_n)
-                if a_n:
-                    teams.append(a_n)
-                fixtures.append({
-                    "match_id": f"fd_{m.get('id')}",
-                    "date": m.get("utcDate", ""),
-                    "home_team": h_n,
-                    "away_team": a_n,
-                    "home_id": "",
-                    "away_id": "",
-                    "home_form": "",
-                    "away_form": "",
-                    "venue": "Official Stadium",
-                    "status": "pre",
-                })
-    except Exception:
-        pass
-    return {"fixtures": fixtures, "teams": list(set(teams))}
-
-
-def fetch_api_football_data(api_football_id: int) -> Dict[str, Any]:
-    """Fetch upcoming fixtures and standings from API-Football free tier."""
-    if not api_football_id or not can_call_provider("api_football"):
-        return {"fixtures": [], "standings": {}}
-
-    headers = {"x-apisports-key": get_secret_key("API_FOOTBALL_KEY")}
-    fixtures, standings = [], {}
-
-    try:
-        record_provider_call("api_football")
-        f_url = f"https://api-sports.io{api_football_id}&next=15"
-        resp = requests.get(f_url, headers=headers, timeout=12)
-        if resp.status_code == 200:
-            for item in resp.json().get("response", []):
-                fix = item.get("fixture", {})
-                tms = item.get("teams", {})
-                h_obj = tms.get("home", {})
-                a_obj = tms.get("away", {})
-                fixtures.append({
-                    "match_id": f"apif_{fix.get('id')}",
-                    "date": fix.get("date", ""),
-                    "home_team": h_obj.get("name", "Home"),
-                    "away_team": a_obj.get("name", "Away"),
-                    "home_id": str(h_obj.get("id", "")),
-                    "away_id": str(a_obj.get("id", "")),
-                    "home_form": "",
-                    "away_form": "",
-                    "venue": fix.get("venue", {}).get("name") or "League Stadium",
-                    "status": "pre",
-                })
-    except Exception:
-        pass
-
-    return {"fixtures": fixtures, "standings": standings}
-
-
-def fetch_fd_uk_historical_csv(fd_uk_code: str) -> List[Dict[str, Any]]:
-    """Download match stats (goals, shots, shots on target) from Football-Data.co.uk."""
-    if not fd_uk_code:
-        return []
-    for season in ("2627", "2526", "2425"):
-        url = f"https://football-data.co.uk{season}/{fd_uk_code}.csv"
+        r = requests.get(url, headers=headers or HEADERS, params=params, timeout=timeout)
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-            if resp.status_code == 200 and len(resp.text) > 200:
-                df = pd.read_csv(io.StringIO(resp.text))
-                needed = [c for c in ("Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "HS", "AS", "HST", "AST") if c in df.columns]
-                df = df[needed].dropna(subset=["HomeTeam", "AwayTeam", "FTHG", "FTAG"])
-                return df.tail(150).to_dict(orient="records")
+            j = r.json()
+        except Exception:
+            j = None
+        return {"status": r.status_code, "error": "", "json": j, "text": r.text[:2000]}
+    except Exception as e:
+        return {"status": 0, "error": f"{type(e).__name__}: {e}", "json": None, "text": ""}
+
+def _seasons():
+    now = datetime.now()
+    primary = now.year if now.month >= 7 else now.year - 1
+    return [primary, primary - 1]
+
+def _fdcuk_str(y):
+    a = int(y) % 100
+    return f"{a:02d}{(a+1)%100:02d}"
+
+def _fetch_espn(entry, diags):
+    slug = entry.get("espn_slug")
+    if not slug:
+        _log(diags, "ESPN", "-", 0, "No espn_slug", 0, "Skipped")
+        return []
+    today = datetime.now().date()
+    end = today + timedelta(days=35)
+    dates = f"{today.strftime('%Y%m%d')}-{end.strftime('%Y%m%d')}"
+    url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/scoreboard"
+    res = _http_get(url, params={"limit": 1000, "dates": dates})
+    if res["status"] != 200 or not res["json"]:
+        _log(diags, "ESPN", url, res["status"], res["error"] or res["text"][:200], 0, "Check slug e.g. eng.1")
+        return []
+    fixtures = []
+    for ev in res["json"].get("events", []):
+        try:
+            comp = ev.get("competitions", [{}])[0]
+            m = {c.get("homeAway"): c.get("team", {}).get("displayName") for c in comp.get("competitors", [])}
+            if m.get("home") and m.get("away"):
+                fixtures.append({"home": m["home"], "away": m["away"], "date": ev.get("date"), "status": "SCHEDULED", "source": "【entity-ESPN¦canonical_name=ESPN】"})
         except Exception:
             continue
+    _log(diags, "ESPN", url, 200, "", len(fixtures), f"dates={dates}")
+    return fixtures
+
+def _fetch_fd(entry, diags):
+    code = entry.get("football_data_code")
+    key = _clean(get_api_keys().get("FOOTBALL_DATA_KEY", ""))
+    if not code:
+        _log(diags, "Football-Data.org", "-", 0, "No football_data_code", 0, "Skipped")
+        return []
+    if not key:
+        _log(diags, "Football-Data.org", "-", 0, "FOOTBALL_DATA_KEY missing", 0, "Add to Secrets")
+        return []
+    ok, _, _ = can_call_provider("Football-Data.org")
+    if not ok:
+        _log(diags, "Football-Data.org", "-", 429, "Quota reached", 0, "")
+        return []
+    for season in _seasons():
+        url = f"https://api.football-data.org/v4/competitions/{code}/matches"
+        res = _http_get(url, headers={**HEADERS, "X-Auth-Token": key}, params={"status": "SCHEDULED", "season": season, "limit": 100})
+        record_provider_call("Football-Data.org")
+        if res["status"] == 403:
+            _log(diags, "Football-Data.org", url, 403, "Free tier does not cover this league", 0, "Use ESPN")
+            return []
+        if res["status"] == 200 and res["json"]:
+            fx = [{"home": m.get("homeTeam", {}).get("name"), "away": m.get("awayTeam", {}).get("name"), "date": m.get("utcDate"), "status": "SCHEDULED", "source": "Football-Data.org"} for m in res["json"].get("matches", [])]
+            if fx:
+                _log(diags, "Football-Data.org", url, 200, "", len(fx), f"season={season}")
+                return fx
+    _log(diags, "Football-Data.org", f".../{code}/matches", 200, "No SCHEDULED matches", 0, "Tried 2026 and 2025")
     return []
 
+def _fetch_apif(entry, diags):
+    lid = entry.get("api_football_id")
+    key = _clean(get_api_keys().get("API_FOOTBALL_KEY", ""))
+    if not lid:
+        _log(diags, "API-Football", "-", 0, "No api_football_id", 0, "Skipped")
+        return []
+    if not key:
+        _log(diags, "API-Football", "-", 0, "API_FOOTBALL_KEY missing", 0, "Skipped")
+        return []
+    for season in _seasons():
+        url = "https://v3.football.api-sports.io/fixtures"
+        res = _http_get(url, headers={**HEADERS, "x-apisports-key": key}, params={"league": lid, "season": season, "status": "NS", "next": 50})
+        record_provider_call("API-Football")
+        if res["status"] == 200 and res["json"]:
+            resp = res["json"].get("response", [])
+            fx = [{"home": x.get("teams", {}).get("home", {}).get("name"), "away": x.get("teams", {}).get("away", {}).get("name"), "date": x.get("fixture", {}).get("date"), "status": "NS", "source": "API-Football"} for x in resp]
+            if fx:
+                _log(diags, "API-Football", url, 200, "", len(fx), f"league={lid} season={season}")
+                return fx
+        else:
+            _log(diags, "API-Football", url, res["status"], res["error"] or str(res["json"])[:200], 0, f"season={season}")
+    return []
 
-def get_league_bundle(league_name: str, force_refresh: bool = False) -> Dict[str, Any]:
-    """Master Multi-Source Router with automatic failover across all free providers."""
-    cache_key = f"league_bundle_v8_{league_name}"
-    if not force_refresh:
-        cached = get_cached_data(cache_key)
-        if cached:
-            return cached["data"]
+def _fetch_tsdb(entry, diags):
+    tid = entry.get("thesportsdb_id")
+    if not tid:
+        _log(diags, "TheSportsDB", "-", 0, "No thesportsdb_id", 0, "Skipped")
+        return []
+    key = _clean(get_api_keys().get("THESPORTSDB_KEY", "")) or "3"
+    url = f"https://www.thesportsdb.com/api/v1/json/{key}/eventsnextleague.php"
+    res = _http_get(url, params={"id": tid})
+    if res["status"] != 200 or not res["json"]:
+        _log(diags, "TheSportsDB", url, res["status"], res["error"] or "Empty JSON", 0, "Test key 3 is rate limited")
+        return []
+    events = res["json"].get("events", []) or []
+    fx = [{"home": e.get("strHomeTeam"), "away": e.get("strAwayTeam"), "date": f"{e.get('dateEvent')}T{e.get('strTime') or '00:00:00'}", "status": "NS", "source": "TheSportsDB"} for e in events if e.get("strHomeTeam")]
+    _log(diags, "TheSportsDB", url, 200, "", len(fx), f"id={tid}")
+    return fx
 
-    cfg = get_league_config(league_name)
-    sources_used = []
-    standings: Dict[str, Any] = {}
-    fixtures: List[Dict[str, Any]] = []
-    recent_results: List[Dict[str, Any]] = []
+def _fetch_fdcuk(entry, diags):
+    code = entry.get("fdcuk_code")
+    if not code:
+        return []
+    for season in _seasons():
+        s = _fdcuk_str(season)
+        url = f"https://www.football-data.co.uk/mmz4281/{s}/{code}.csv"
+        res = _http_get(url, timeout=10)
+        if res["status"] == 200 and "Date" in res["text"]:
+            rows = list(csv.DictReader(io.StringIO(res["text"])))
+            _log(diags, "Football-Data.co.uk", url, 200, "", len(rows), f"Historical season={s}")
+            return rows
+    _log(diags, "Football-Data.co.uk", f".../{code}.csv", 404, "CSV not found", 0, "Only top leagues have CSVs")
+    return []
 
-    tsdb_data = fetch_thesportsdb_data(league_name)
-    if tsdb_data["fixtures"] or tsdb_data["standings"]:
-        sources_used.append("TheSportsDB Live Feed")
-        fixtures.extend(tsdb_data["fixtures"])
-        recent_results.extend(tsdb_data["recent_results"])
-        standings.update(tsdb_data["standings"])
-
-    fd_data = fetch_fd_org_data(cfg.get("fd_org_code"))
-    if fd_data["fixtures"] or fd_data["teams"]:
-        sources_used.append("Football-Data.org")
-        if not fixtures:
-            fixtures.extend(fd_data["fixtures"])
-        for idx, tm in enumerate(fd_data["teams"]):
-            if tm not in standings:
-                standings[tm] = {"rank": idx + 1, "played": 10, "wins": 4, "draws": 3, "losses": 3, "gf": 13.0, "ga": 13.0, "points": 15}
-
-    if not fixtures:
-        apif_data = fetch_api_football_data(cfg.get("api_football_id"))
-        if apif_data["fixtures"]:
-            sources_used.append("API-Football Live")
-            fixtures.extend(apif_data["fixtures"])
-
-    csv_history = fetch_fd_uk_historical_csv(cfg.get("fd_uk_code"))
-    if csv_history:
-        sources_used.append("Football-Data.co.uk CSV")
-        if not standings:
-            csv_teams = sorted(list({m["HomeTeam"] for m in csv_history} | {m["AwayTeam"] for m in csv_history}))
-            for idx, tm in enumerate(csv_teams):
-                standings[tm] = {"rank": idx + 1, "played": 10, "wins": 4, "draws": 3, "losses": 3, "gf": 13.0, "ga": 13.0, "points": 15}
-
-    for fx in fixtures:
-        if not fx.get("home_form") and fx["home_team"] in standings:
-            fx["home_form"] = standings[fx["home_team"]].get("form", "")
-        if not fx.get("away_form") and fx["away_team"] in standings:
-            fx["away_form"] = standings[fx["away_team"]].get("form", "")
-
-    bundle = {
-        "league_name": league_name,
-        "config": cfg,
-        "fixtures": fixtures,
-        "recent_results": recent_results,
-        "standings": standings,
-        "team_ids": {},
-        "historical_matches": csv_history,
-        "api_injuries": [],
-        "sources_used": sources_used if sources_used else [f"Baseline Model (TSDB: {tsdb_data.get('status')})"],
-    }
-
-    if sources_used:
-        set_cached_data(cache_key, bundle, ", ".join(sources_used), ttl_seconds=14400)
-    return bundle
+def get_league_bundle(league_key, league_entry=None):
+    entry = league_entry or LEAGUE_REGISTRY.get(league_key, {}) or {}
+    cache_key = f"bundle:{league_key}"
+    cached = get_cached_data(cache_key)
+    if cached and cached.get("fixtures"):
+        return cached
+    diags = []
+    all_fx = []
+    sources = []
+    hist = []
+    for fn, name in [(_fetch_espn, "ESPN"), (_fetch_fd, "Football-Data.org"), (_fetch_apif, "API-Football"), (_fetch_tsdb, "TheSportsDB")]:
+        try:
+            got = fn(entry, diags)
+            if got:
+                all_fx.extend(got)
+                sources.append(name)
+        except Exception as e:
+            _log(diags, name, "-", 0, f"Python error: {e}", 0, "")
+    try:
+        hist = _fetch_fdcuk(entry, diags)
+    except Exception as e:
+        _log(diags, "Football-Data.co.uk", "-", 0, str(e), 0, "")
+    seen = set()
+    fixtures = []
+    for f in all_fx:
+        k = (str(f.get("home", "")).lower(), str(f.get("away", "")).lower(), str(f.get("date", ""))[:10])
+        if k not in seen:
+            seen.add(k)
+            fixtures.append(f)
+    has_live = len(fixtures) > 0
+    conf = 90 if len(sources) >= 2 else 75 if len(sources) == 1 else 40 if hist else 15
+    out = {"league": league_key, "league_name": entry.get("name", league_key), "fixtures": fixtures, "historical": hist, "sources_used": sources, "active_sources": sources if sources else ["Baseline League Model"], "diagnostics": diags, "data_confidence_pct": conf, "has_live_data": has_live}
+    if has_live:
+        set_cached_data(cache_key, out, ttl_seconds=1800)
+    return out
