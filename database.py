@@ -1,148 +1,75 @@
-"""
-database.py
-Local SQLite caching layer, API quota ledger, and prediction calibration storage.
-Runs at $0 cost with zero external database setup required.
-"""
+# database.py - SQLite cache, quota log, prediction history
+import sqlite3, json, time, os
+DB_PATH = os.path.join(os.path.dirname(__file__), "football_engine.db")
 
-import sqlite3
-import json
-import time
-from typing import Any, Optional, List, Dict
+def _conn():
+    c = sqlite3.connect(DB_PATH)
+    c.row_factory = sqlite3.Row
+    return c
 
-DB_PATH = "football_engine.db"
+def init_db():
+    c = _conn()
+    c.execute("CREATE TABLE IF NOT EXISTS api_cache (cache_key TEXT PRIMARY KEY, data TEXT, expires_at REAL)")
+    c.execute("CREATE TABLE IF NOT EXISTS quota_log (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, created_at TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS prediction_history (id INTEGER PRIMARY KEY AUTOINCREMENT, league TEXT, home TEXT, away TEXT, home_goals INTEGER, away_goals INTEGER, home_prob REAL, draw_prob REAL, away_prob REAL, confidence REAL, created_at TEXT)")
+    c.commit()
+    c.close()
 
-
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db() -> None:
-    """Create all required tables if they do not exist."""
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS api_cache (
-            cache_key TEXT PRIMARY KEY,
-            payload TEXT NOT NULL,
-            source_name TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            ttl_seconds INTEGER NOT NULL
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS quota_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider TEXT NOT NULL,
-            called_at REAL NOT NULL
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS prediction_history (
-            match_id TEXT PRIMARY KEY,
-            league_name TEXT NOT NULL,
-            home_team TEXT NOT NULL,
-            away_team TEXT NOT NULL,
-            match_date TEXT NOT NULL,
-            prob_home REAL NOT NULL,
-            prob_draw REAL NOT NULL,
-            prob_away REAL NOT NULL,
-            projected_score TEXT NOT NULL,
-            actual_home_goals INTEGER DEFAULT NULL,
-            actual_away_goals INTEGER DEFAULT NULL,
-            brier_score REAL DEFAULT NULL,
-            created_at REAL NOT NULL
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-def get_cached_data(cache_key: str) -> Optional[Dict[str, Any]]:
-    """Return cached JSON payload and source if still within TTL."""
-    init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT payload, source_name, created_at, ttl_seconds FROM api_cache WHERE cache_key = ?",
-        (cache_key,),
-    )
-    row = cur.fetchone()
-    conn.close()
-
-    if not row:
+def get_cached_data(key):
+    try:
+        c = _conn()
+        row = c.execute("SELECT data, expires_at FROM api_cache WHERE cache_key=?", (key,)).fetchone()
+        c.close()
+        if row and row["expires_at"] > time.time():
+            return json.loads(row["data"])
+        return None
+    except Exception:
         return None
 
-    age = time.time() - row["created_at"]
-    if age > row["ttl_seconds"]:
-        return None
+def set_cached_data(key, data, ttl_seconds=3600):
+    try:
+        c = _conn()
+        c.execute("INSERT OR REPLACE INTO api_cache VALUES (?,?,?)", (key, json.dumps(data, default=str), time.time() + ttl_seconds))
+        c.commit()
+        c.close()
+    except Exception:
+        pass
 
-    return {
-        "data": json.loads(row["payload"]),
-        "source": row["source_name"],
-        "cached": True,
-    }
+def save_prediction_record(league, home, away, home_goals, away_goals, home_prob, draw_prob, away_prob, confidence):
+    try:
+        from datetime import datetime
+        c = _conn()
+        c.execute("INSERT INTO prediction_history (league, home, away, home_goals, away_goals, home_prob, draw_prob, away_prob, confidence, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  (league, home, away, int(home_goals), int(away_goals), float(home_prob), float(draw_prob), float(away_prob), float(confidence), datetime.now().isoformat()))
+        c.commit()
+        c.close()
+    except Exception:
+        pass
 
+def get_prediction_history(limit=50):
+    try:
+        c = _conn()
+        rows = c.execute("SELECT * FROM prediction_history ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        c.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
 
-def set_cached_data(cache_key: str, data: Any, source_name: str, ttl_seconds: int = 21600) -> None:
-    """Store JSON-serializable data in SQLite cache (default 6 hours TTL)."""
-    init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT OR REPLACE INTO api_cache (cache_key, payload, source_name, created_at, ttl_seconds)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (cache_key, json.dumps(data), source_name, time.time(), ttl_seconds),
-    )
-    conn.commit()
-    conn.close()
+def log_quota(provider):
+    try:
+        from datetime import datetime
+        c = _conn()
+        c.execute("INSERT INTO quota_log (provider, created_at) VALUES (?,?)", (provider, datetime.now().strftime("%Y-%m-%d")))
+        c.commit()
+        c.close()
+    except Exception:
+        pass
 
-
-def save_prediction_record(record: Dict[str, Any]) -> None:
-    """Save pre-match simulation probabilities for future accuracy & Brier score tracking."""
-    init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT OR REPLACE INTO prediction_history
-        (match_id, league_name, home_team, away_team, match_date,
-         prob_home, prob_draw, prob_away, projected_score, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            record["match_id"],
-            record["league_name"],
-            record["home_team"],
-            record["away_team"],
-            record["match_date"],
-            record["prob_home"],
-            record["prob_draw"],
-            record["prob_away"],
-            record["projected_score"],
-            time.time(),
-        ),
-    )
-    conn.commit()
-    conn.close()
-
-
-def get_prediction_history(limit: int = 50) -> List[Dict[str, Any]]:
-    """Fetch recent predictions for the accuracy tracker tab."""
-    init_db()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT * FROM prediction_history ORDER BY created_at DESC LIMIT ?",
-        (limit,),
-    )
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
+def get_quota_count(provider, date_str):
+    try:
+        c = _conn()
+        row = c.execute("SELECT COUNT(*) as n FROM quota_log WHERE provider=? AND created_at=?", (provider, date_str)).fetchone()
+        c.close()
+        return int(row["n"]) if row else 0
+    except Exception:
+        return 0
