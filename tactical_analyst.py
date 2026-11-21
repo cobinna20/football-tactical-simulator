@@ -1,97 +1,38 @@
-"""
-tactical_analyst.py
-Generates a human-readable, data-backed Tactical Reasoning Report using
-Google Gemini Free Tier (gemini-2.5-flash), with a zero-dependency rule-based
-fallback so tactical explanations always work even offline.
-"""
+# tactical_analyst.py - Gemini with deterministic fallback
+import os
+try:
+    import streamlit as st
+except Exception:
+    st = None
 
-from typing import Dict, Any
-from google import genai
-from quota_manager import get_secret_key
+def _key():
+    if st is not None:
+        try:
+            if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+                return str(st.secrets["GEMINI_API_KEY"]).strip().strip('"')
+        except Exception:
+            pass
+    return os.getenv("GEMINI_API_KEY", "").strip()
 
-
-def build_fallback_tactical_report(
-    fusion_profile: Dict[str, Any],
-    home_squad: Dict[str, Any],
-    away_squad: Dict[str, Any],
-    context_lambdas: Dict[str, Any],
-    mc_results: Dict[str, Any],
-    sim_result: Dict[str, Any],
-) -> str:
-    """Deterministic sports-science reasoning report when Gemini API is unavailable."""
-    h_name = fusion_profile["home"]["name"]
-    a_name = fusion_profile["away"]["name"]
-
-    h_inj_count = fusion_profile["home"]["injuries"]["absence_count"]
-    a_inj_count = fusion_profile["away"]["injuries"]["absence_count"]
-
-    h_key = ", ".join(p["name"] for p in home_squad["key_players"][:2])
-    a_key = ", ".join(p["name"] for p in away_squad["key_players"][:2])
-
-    return (
-        f"### Tactical & Statistical Match Reasoning ({h_name} vs {a_name})\n\n"
-        f"**1. Real-World Probability Alignment:** Across **10,000 Monte Carlo simulations**, "
-        f"**{h_name}** holds a **{mc_results['prob_home']}%** win probability, **Draw** is **{mc_results['prob_draw']}%**, "
-        f"and **{a_name}** holds **{mc_results['prob_away']}%**. The simulated **{sim_result['scoreline']}** scoreline reflects "
-        f"calibrated Expected Goals of **{context_lambdas['lambda_home']} xG** vs **{context_lambdas['lambda_away']} xG**.\n\n"
-        f"**2. Squad Ability & Consistency Impact:** {h_name} enters with an Overall Starting XI rating of "
-        f"**{home_squad['overall_rating']}/100** (Consistency: **{home_squad['team_consistency']}/100**, led by {h_key}), "
-        f"facing {a_name}'s **{away_squad['overall_rating']}/100** XI (Consistency: **{away_squad['team_consistency']}/100**, led by {a_key}).\n\n"
-        f"**3. Tactical Clash & Contextual Factors:** Expected style: **{context_lambdas['tactical_style']}**. "
-        f"Squad availability shows **{h_inj_count}** noted absences for {h_name} and **{a_inj_count}** for {a_name}. "
-        f"Recovery window stands at **{context_lambdas['home_rest_days']} days** rest for {h_name} vs "
-        f"**{context_lambdas['away_rest_days']} days** for {a_name}."
-    )
-
-
-def generate_tactical_reasoning(
-    fusion_profile: Dict[str, Any],
-    home_squad: Dict[str, Any],
-    away_squad: Dict[str, Any],
-    context_lambdas: Dict[str, Any],
-    mc_results: Dict[str, Any],
-    sim_result: Dict[str, Any],
-) -> str:
-    """Use free Google Gemini Flash to synthesize a concise, data-grounded tactical analysis."""
-    api_key = get_secret_key("GEMINI_API_KEY")
-    if not api_key:
-        return build_fallback_tactical_report(
-            fusion_profile, home_squad, away_squad, context_lambdas, mc_results, sim_result
-        )
-
-    h_name = fusion_profile["home"]["name"]
-    a_name = fusion_profile["away"]["name"]
-
-    prompt = f"""
-    Act as an elite football tactical analyst and sports data scientist. Write a concise, insightful
-    3-paragraph Tactical Match Reasoning Report explaining why the simulated result ({h_name} {sim_result['scoreline']} {a_name})
-    aligns with real-world statistical probabilities before kickoff. Strictly focus on football tactics,
-    player ratings, consistency, fatigue, and injuries. Do NOT mention gambling, betting, or odds.
-
-    DATA SUMMARY:
-    - Fixture: {h_name} vs {a_name} ({fusion_profile['fixture'].get('date', '')[:10]})
-    - 10,000x Monte Carlo Probabilities: Home Win {mc_results['prob_home']}%, Draw {mc_results['prob_draw']}%, Away Win {mc_results['prob_away']}%
-    - Calibrated Expected Goals: {h_name} {context_lambdas['lambda_home']} xG vs {a_name} {context_lambdas['lambda_away']} xG
-    - {h_name} Squad Ratings: Overall {home_squad['overall_rating']}, Attack {home_squad['attack_rating']}, Midfield {home_squad['midfield_rating']}, Defense {home_squad['defense_rating']}, Squad Consistency {home_squad['team_consistency']}/100
-    - {a_name} Squad Ratings: Overall {away_squad['overall_rating']}, Attack {away_squad['attack_rating']}, Midfield {away_squad['midfield_rating']}, Defense {away_squad['defense_rating']}, Squad Consistency {away_squad['team_consistency']}/100
-    - {h_name} Key Players: {[p['name'] + ' (Ability ' + str(p['ability']) + ', Cons ' + str(p['consistency']) + ')' for p in home_squad['key_players']]}
-    - {a_name} Key Players: {[p['name'] + ' (Ability ' + str(p['ability']) + ', Cons ' + str(p['consistency']) + ')' for p in away_squad['key_players']]}
-    - Injuries/Absences: {h_name} ({fusion_profile['home']['injuries']['absence_count']} out, -{fusion_profile['home']['injuries']['penalty_pct']}% impact) vs {a_name} ({fusion_profile['away']['injuries']['absence_count']} out, -{fusion_profile['away']['injuries']['penalty_pct']}% impact)
-    - Context: {context_lambdas['tactical_style']} | Rest Days: {h_name} {context_lambdas['home_rest_days']}d vs {a_name} {context_lambdas['away_rest_days']}d
-    - Match Stakes: {h_name} ({context_lambdas['home_motivation']}) vs {a_name} ({context_lambdas['away_motivation']})
-    """
-
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-        )
-        if response and response.text:
-            return response.text.strip()
-    except Exception:
-        pass
-
-    return build_fallback_tactical_report(
-        fusion_profile, home_squad, away_squad, context_lambdas, mc_results, sim_result
-    )
+def generate_tactical_report(home_team, away_team, home_ratings, away_ratings, sim, lambdas, modifiers):
+    prompt = f"""Write a 3 paragraph tactical match reasoning report for {home_team} vs {away_team}.
+Home ratings: {home_ratings}. Away ratings: {away_ratings}.
+Simulation: Home {sim.get('home_prob')}% Draw {sim.get('draw_prob')}% Away {sim.get('away_prob')}%, Most likely {sim.get('most_likely')}, Expected goals {lambdas.get('lambda_home')} vs {lambdas.get('lambda_away')}.
+Modifiers: {modifiers.get('modifiers')}.
+Paragraph 1: tactical matchup and key battles. Paragraph 2: why the probabilities look like this and where the model could be wrong. Paragraph 3: what each team must do to win. No betting language, only sports analytics."""
+    key = _key()
+    if key:
+        try:
+            from google import genai
+            client = genai.Client(api_key=key)
+            resp = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+            txt = (resp.text or "").strip()
+            if len(txt) > 200:
+                return txt
+        except Exception:
+            pass
+    # Deterministic fallback, always works offline
+    p1 = f"{home_team} ({home_ratings['Overall']} overall) host {away_team} ({away_ratings['Overall']} overall) in a matchup shaped by attack against defence. Home Attack {home_ratings['Attack']} meets Away Defence {away_ratings['Defense']}, while Away Attack {away_ratings['Attack']} meets Home Defence {home_ratings['Defense']}. The midfield battle, Home {home_ratings['Midfield']} vs Away {away_ratings['Midfield']}, will decide who controls tempo and who is forced to chase second balls."
+    p2 = f"The Monte Carlo model gives Home {sim.get('home_prob')}%, Draw {sim.get('draw_prob')}%, Away {sim.get('away_prob')}% with a most likely score of {sim.get('most_likely')} and expected goals of {lambdas.get('lambda_home')} to {lambdas.get('lambda_away')}. That aligns with the rating gap and home advantage, but the model is sensitive to early goals, set pieces and squad consistency ({home_ratings['Squad Consistency']} vs {away_ratings['Squad Consistency']}). If the underdog scores first, the volatility noted in the context modifiers becomes the real story."
+    p3 = f"For {home_team} to win, they must turn midfield control into early chances and protect against the counter. For {away_team} to win, they must stay compact, survive the first 20 minutes, and exploit transitions when the home side commits full backs forward. The decisive factor is not possession alone, it is shot quality in the final third and discipline after conceding."
+    return f"{p1}\n\n{p2}\n\n{p3}"
